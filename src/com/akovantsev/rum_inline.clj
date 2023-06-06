@@ -1,7 +1,8 @@
 (ns com.akovantsev.rum-inline
-  ;(:require
-  ; [clojure.walk :as walk]
-  ; [rum.core :as rum])
+  #_
+  (:require
+   [clojure.walk :as walk]
+   [rum.core :as rum])
   (:import
    [java.math BigInteger]
    [java.security MessageDigest]))
@@ -90,8 +91,8 @@
          ;; I use (the only?) stable thing - md5 of form itself:
          suff#      (-> body pr-str -md5)
          comp#      (symbol (str (or name# "InlineComponent") "_" suff#))
-         state#     (symbol (str "rum-state-" suff#))
-         rerender#  (symbol (str "rerender-" suff#))
+         state#     (gensym "rum-state-")
+         rerender#  (gensym "rerender-")
 
          cljs?#     (:ns &env)
          exists?#   (if cljs?# ;; from cljs/clojure defonce:
@@ -100,8 +101,9 @@
          locals#    (if cljs?#
                       (-> &env :locals keys set)
                       (-> &env keys set))
-         args#      (->> body (tree-seq coll? identity) (filter locals#) distinct vec)
          atom-syms# (->> bindings (partition 2) (mapv first))
+         exprs#     (->> bindings (partition 2) (mapv second))
+         args#      (->> [exprs# body] (tree-seq coll? identity) (filter locals#) distinct vec)
          reactive?# (->> body (tree-seq coll? identity) (some #{'rum.core/react 'rum/react}))
 
          ;; this is 'init local atom from args'
@@ -111,12 +113,12 @@
                               ~@(->> bindings
                                   (partition 2)
                                   (mapcat (fn [[k# expr#]] [k# (list 'clojure.core/atom expr#)])))
-                              ~rerender# (fn [_# _# o# n#]
-                                           (when (not= o# n#)
+                              ~rerender# (fn [~'_ ~'_ ~'o ~'n]
+                                           (when (not= ~'o ~'n)
                                              (-> ~state# :rum/react-component ~'rum.core/request-render)))]
                           ~@(->> atom-syms#
-                              (map (fn [k#] (list 'clojure.core/add-watch k# ::request-rerender rerender#))))
-                          (assoc ~state# ::atoms ~atom-syms#)))}
+                              (map (fn [k#] (list 'clojure.core/add-watch k# :request-rerender rerender#))))
+                          (assoc ~state# :atoms ~atom-syms#)))}
 
          defc#      `(~'rum.core/defcs ~comp#
                       ~'<
@@ -124,12 +126,36 @@
                       ~@(when reactive?# ['rum.core/reactive])
                       ~@(when (seq bindings) [atoms-mx#])
                       [~state# ~@args#]
-                      (let [~atom-syms# (::atoms ~state#)]
-                        ~body))
+                      ~(if (seq bindings)
+                         (list 'let [atom-syms# (list :atoms state#)]
+                           body)
+                         body))
          return#    (if-not react-key#
                       `(-> (do (if (not ~exists?#) ~defc#) (~comp# ~@args#)))
                       `(-> (do (if (not ~exists?#) ~defc#) (~comp# ~@args#))
                          (~'rum.core/with-key ~react-key#)))]
 
-     ;(clojure.pprint/pprint return#)
+     (when (or
+             (:p (meta &form))
+             (:p (meta bindings))
+             (:p (meta body)))
+       (clojure.pprint/pprint return#))
      return#)))
+
+
+
+#_
+(rum/defc Parent [a b]
+  (let [c 1, d 2]
+    [:table
+     [:tbody
+      ;^:p
+      (inline
+        (for [idx (range 10)]
+          (inline ^{:key idx :name "MyInlineRowComp"}
+            [:tr {}
+             [:td (+ idx c d)
+              ^:p
+              (inline [!x (+ 1 idx)
+                       !y (+ 2 idx b)]
+                [:td (str a "-" @!x)])]])))]]))
